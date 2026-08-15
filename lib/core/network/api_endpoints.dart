@@ -63,11 +63,18 @@ abstract final class ApiConfig {
     return 'http://localhost:4000/v1';
   }
 
-  static String get baseUrl => contract == ApiContract.ev
+    static String get baseUrl {
+      // Web deployments should use same-origin API paths to avoid CORS issues.
+      if (kIsWeb && contract == ApiContract.ev && current != ApiEnv.development) {
+    return '/v1';
+      }
+
+      return contract == ApiContract.ev
       ? (current == ApiEnv.development
-            ? _localEvBaseUrl
-            : _evBaseUrls[current]!)
+        ? _localEvBaseUrl
+        : _evBaseUrls[current]!)
       : _baseUrls[current]!;
+    }
 
   /// EV headers are injected when [contract] is [ApiContract.ev].
   /// Keep secrets out of source code by passing values through --dart-define.

@@ -5,6 +5,10 @@
   "outputDirectory": "build/web",
   "rewrites": [
     {
+      "source": "/v1/(.*)",
+      "destination": "https://ev-api.aks2.mellob.in/v1/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
