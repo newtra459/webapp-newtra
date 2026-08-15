@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_DIR="$(pwd)"
 FLUTTER_VERSION="3.24.0"
 FLUTTER_DIR="$HOME/flutter"
 
@@ -18,5 +19,6 @@ export PATH="$FLUTTER_DIR/bin:$PATH"
 flutter --version
 flutter config --enable-web
 
+cd "$PROJECT_DIR"
 flutter pub get
 flutter build web --release --base-href /
