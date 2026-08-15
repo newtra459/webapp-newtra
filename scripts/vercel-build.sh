@@ -18,6 +18,5 @@ export PATH="$FLUTTER_DIR/bin:$PATH"
 flutter --version
 flutter config --enable-web
 
-cd "$VERCEL_PROJECT_ROOT"
 flutter pub get
 flutter build web --release --base-href /
