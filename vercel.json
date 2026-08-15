@@ -1,5 +1,7 @@
 {
-  "buildCommand": "flutter build web --release",
+  "framework": null,
+  "installCommand": "echo 'No npm install required'",
+  "buildCommand": "chmod +x ./scripts/vercel-build.sh && ./scripts/vercel-build.sh",
   "outputDirectory": "build/web",
   "rewrites": [
     {
