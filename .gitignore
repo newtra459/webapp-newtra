@@ -1,0 +1,11 @@
+
+app-release.apk
+build/app-release.apk
+build/
+CLAUDE.md
+build_error_full.log
+
+# Signing keys
+android/key.properties
+**/*.jks
+**/*.keystore

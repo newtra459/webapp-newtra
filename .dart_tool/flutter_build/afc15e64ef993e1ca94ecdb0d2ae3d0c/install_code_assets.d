@@ -1,0 +1,1 @@
+ C:\\Users\\rkeerthi\\Desktop\\Newtra\ App\\FINAL\ NEW\ APP\ AUGUST\\Ev-app\\.dart_tool\\flutter_build\\afc15e64ef993e1ca94ecdb0d2ae3d0c\\native_assets.json: 

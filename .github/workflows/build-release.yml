@@ -1,0 +1,222 @@
+name: Build & Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag (e.g. v3.0.0). Leave empty to auto-generate from pubspec.'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Azure VM Setup ---
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Generate SSH key pair
+        run: |
+          ssh-keygen -t ed25519 -f ~/.ssh/azure_vm_key -N "" -q
+          chmod 600 ~/.ssh/azure_vm_key
+
+      - name: Create Azure VM
+        id: create_vm
+        run: |
+          VM_NAME="flutter-build-${{ github.run_id }}"
+          echo "vm_name=$VM_NAME" >> "$GITHUB_OUTPUT"
+
+          az vm create \
+            --resource-group default \
+            --name "$VM_NAME" \
+            --location eastus2 \
+            --size Standard_D4s_v3 \
+            --image Ubuntu2204 \
+            --admin-username azureuser \
+            --ssh-key-values ~/.ssh/azure_vm_key.pub \
+            --public-ip-sku Standard \
+            --output json > /tmp/vm_info.json
+
+          VM_IP=$(jq -r '.publicIpAddress' /tmp/vm_info.json)
+          echo "vm_ip=$VM_IP" >> "$GITHUB_OUTPUT"
+          echo "VM created at $VM_IP"
+
+      - name: Wait for SSH to be ready
+        run: |
+          VM_IP="${{ steps.create_vm.outputs.vm_ip }}"
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/azure_vm_key azureuser@"$VM_IP" "echo ready" 2>/dev/null; then
+              echo "SSH is ready"
+              exit 0
+            fi
+            echo "Waiting for SSH... attempt $i"
+            sleep 5
+          done
+          echo "SSH failed to connect"
+          exit 1
+
+      # --- Install dependencies on VM ---
+      - name: Install Java, Flutter, Android SDK on VM
+        run: |
+          VM_IP="${{ steps.create_vm.outputs.vm_ip }}"
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/azure_vm_key azureuser@"$VM_IP" 'bash -s' << 'SETUP_SCRIPT'
+          set -euo pipefail
+
+          # Install Java 17
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openjdk-17-jdk-headless unzip git curl > /dev/null 2>&1
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          echo "export JAVA_HOME=$JAVA_HOME" >> ~/.bashrc
+
+          # Install Flutter SDK (stable)
+          git clone --depth 1 --branch stable https://github.com/flutter/flutter.git ~/flutter
+          export PATH="$HOME/flutter/bin:$PATH"
+          echo 'export PATH="$HOME/flutter/bin:$PATH"' >> ~/.bashrc
+
+          # Pre-cache Flutter artifacts
+          flutter precache --android
+          flutter --version
+
+          # Install Android SDK (command-line tools)
+          mkdir -p ~/android-sdk/cmdline-tools
+          cd /tmp
+          curl -sO https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q commandlinetools-linux-11076708_latest.zip
+          mv cmdline-tools ~/android-sdk/cmdline-tools/latest
+
+          export ANDROID_HOME=$HOME/android-sdk
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          echo "export ANDROID_HOME=$ANDROID_HOME" >> ~/.bashrc
+          echo 'export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"' >> ~/.bashrc
+
+          # Accept licenses and install required SDK components
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /dev/null 2>&1
+
+          # Configure Flutter for Android
+          flutter config --android-sdk "$ANDROID_HOME"
+          yes | flutter doctor --android-licenses > /dev/null 2>&1 || true
+
+          echo "=== Setup complete ==="
+          flutter doctor -v
+          SETUP_SCRIPT
+
+      # --- Build APK ---
+      - name: Build release APK on VM
+        run: |
+          VM_IP="${{ steps.create_vm.outputs.vm_ip }}"
+
+          # Copy repo to VM
+          tar czf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" .
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/azure_vm_key /tmp/repo.tar.gz azureuser@"$VM_IP":/tmp/repo.tar.gz
+
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/azure_vm_key azureuser@"$VM_IP" 'bash -s' << 'BUILD_SCRIPT'
+          set -euo pipefail
+          export PATH="$HOME/flutter/bin:$HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools:$PATH"
+          export ANDROID_HOME=$HOME/android-sdk
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+          # Extract repo
+          mkdir -p ~/build
+          cd ~/build
+          tar xzf /tmp/repo.tar.gz
+
+          # Build
+          flutter pub get
+          flutter pub upgrade google_fonts
+          flutter build apk --release
+
+          echo "=== Build complete ==="
+          ls -lh build/app/outputs/flutter-apk/app-release.apk
+          BUILD_SCRIPT
+
+      - name: Copy APK from VM
+        run: |
+          VM_IP="${{ steps.create_vm.outputs.vm_ip }}"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/azure_vm_key \
+            azureuser@"$VM_IP":~/build/build/app/outputs/flutter-apk/app-release.apk \
+            "$GITHUB_WORKSPACE/output/app-release.apk"
+          ls -lh "$GITHUB_WORKSPACE/output/app-release.apk"
+
+      # --- Create GitHub Release ---
+      - name: Determine version tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ github.event.inputs.version_tag }}" ]; then
+            TAG="${{ github.event.inputs.version_tag }}"
+          else
+            VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+            TAG="v${VERSION}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version tag: $TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Create tag if it doesn't exist
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+          gh release create "$TAG" \
+            "$GITHUB_WORKSPACE/output/app-release.apk" \
+            --title "Release $TAG" \
+            --notes "Automated release build for $TAG" \
+            --latest
+
+      # --- Cleanup Azure Resources ---
+      - name: Delete Azure VM and resources
+        if: always()
+        run: |
+          VM_NAME="${{ steps.create_vm.outputs.vm_name }}"
+          if [ -z "$VM_NAME" ]; then
+            echo "No VM name found, skipping cleanup"
+            exit 0
+          fi
+
+          echo "Deleting VM: $VM_NAME"
+          az vm delete --resource-group default --name "$VM_NAME" --yes --force-deletion true 2>/dev/null || true
+
+          # Clean up associated resources
+          echo "Cleaning up associated resources..."
+
+          NIC_NAME="${VM_NAME}VMNic"
+          az network nic delete --resource-group default --name "$NIC_NAME" 2>/dev/null || true
+
+          NSG_NAME="${VM_NAME}NSG"
+          az network nsg delete --resource-group default --name "$NSG_NAME" 2>/dev/null || true
+
+          IP_NAME="${VM_NAME}PublicIP"
+          az network public-ip delete --resource-group default --name "$IP_NAME" 2>/dev/null || true
+
+          DISK_NAME=$(az disk list --resource-group default --query "[?contains(name, '$VM_NAME')].name" -o tsv 2>/dev/null || echo "")
+          if [ -n "$DISK_NAME" ]; then
+            az disk delete --resource-group default --name "$DISK_NAME" --yes 2>/dev/null || true
+          fi
+
+          VNET_NAME="${VM_NAME}VNET"
+          az network vnet delete --resource-group default --name "$VNET_NAME" 2>/dev/null || true
+
+          echo "Cleanup complete"
