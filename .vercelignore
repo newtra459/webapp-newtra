@@ -1,0 +1,13 @@
+.git
+.gitignore
+README.md
+.env.example
+.dart_tool
+.pub-cache
+test
+ios
+android
+linux
+windows
+macos
+integration_test
