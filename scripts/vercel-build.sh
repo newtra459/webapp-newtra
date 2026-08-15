@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(pwd)"
-FLUTTER_VERSION="3.24.0"
+FLUTTER_VERSION="3.44.6"
 FLUTTER_DIR="$HOME/flutter"
 
 if [ ! -d "$FLUTTER_DIR" ]; then
