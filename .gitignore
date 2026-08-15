@@ -1,4 +1,8 @@
 
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
 app-release.apk
 build/app-release.apk
 build/
